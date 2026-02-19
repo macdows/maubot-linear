@@ -1,0 +1,8 @@
+anthropic_api_key: ""
+claude_model: "claude-sonnet-4-6"
+allowed_users: []
+max_tool_rounds: 5
+# OAuth (optional — if unset, users link via !linear token in DMs)
+linear_client_id: ""
+linear_client_secret: ""
+linear_redirect_uri: ""

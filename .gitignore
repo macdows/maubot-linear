@@ -1,0 +1,3 @@
+*.mbp
+__pycache__/
+*.pyc

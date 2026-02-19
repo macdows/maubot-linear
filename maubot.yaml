@@ -1,0 +1,15 @@
+maubot: 0.1.0
+id: app.cliquers.linear
+version: 0.1.0
+license: MIT
+modules:
+  - linear_bot
+  - mcp_client
+  - claude_client
+  - store
+main_class: LinearBot
+database: true
+webapp: true
+config: true
+extra_files:
+  - base-config.yaml
