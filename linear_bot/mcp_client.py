@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 
@@ -50,7 +51,7 @@ class MCPClient:
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
         }
         session_id = self._sessions.get(th)
         if session_id:
@@ -73,7 +74,12 @@ class MCPClient:
                 raise MCPError(f"MCP server returned {resp.status}: {text}", resp.status)
 
             resp_headers = dict(resp.headers)
-            data = await resp.json()
+            content_type = resp.content_type or ""
+
+            if "text/event-stream" in content_type:
+                data = await self._read_sse_response(resp)
+            else:
+                data = await resp.json()
 
             # Capture session ID from response
             new_session_id = resp.headers.get("Mcp-Session-Id")
@@ -85,6 +91,29 @@ class MCPClient:
                 raise MCPError(err.get("message", str(err)), err.get("code"))
 
             return data.get("result", {}), resp_headers
+
+    @staticmethod
+    async def _read_sse_response(resp: aiohttp.ClientResponse) -> dict:
+        """Read an SSE stream and return the first JSON-RPC message."""
+        data_buf = []
+        async for raw_line in resp.content:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line.startswith("data:"):
+                data_buf.append(line[5:].strip())
+            elif line == "" and data_buf:
+                # Empty line = end of SSE event
+                payload = "\n".join(data_buf)
+                data_buf.clear()
+                try:
+                    msg = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                # Return first message that has an "id" (JSON-RPC response)
+                if "id" in msg:
+                    return msg
+        if data_buf:
+            return json.loads("\n".join(data_buf))
+        raise MCPError("SSE stream ended without a JSON-RPC response")
 
     async def initialize(self, session: aiohttp.ClientSession, token: str) -> dict:
         """Initialize an MCP session. Must be called before other methods."""
