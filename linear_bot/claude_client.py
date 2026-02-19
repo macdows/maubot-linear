@@ -5,12 +5,13 @@ import logging
 
 import aiohttp
 
-from mcp_client import MCPClient, TokenInvalidError
+from .mcp_client import MCPClient, TokenInvalidError
 
 log = logging.getLogger("maubot.linear.claude")
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
+API_TIMEOUT = aiohttp.ClientTimeout(total=60)
 
 SYSTEM_PROMPT = """\
 You are a Linear assistant in a Matrix chat room. Execute the user's request using \
@@ -185,7 +186,7 @@ class ClaudeClient:
         if tools:
             body["tools"] = tools
 
-        async with http.post(API_URL, json=body, headers=headers) as resp:
+        async with http.post(API_URL, json=body, headers=headers, timeout=API_TIMEOUT) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 raise Exception(f"Claude API returned {resp.status}: {text[:500]}")

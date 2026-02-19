@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 import secrets
@@ -16,9 +17,9 @@ from maubot.handlers import command, event, web
 from mautrix.types import EventType, RoomID
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
-from store import upgrade_table, UserTokenStore, TicketLinkStore
-from mcp_client import MCPClient, TokenInvalidError, MCPError
-from claude_client import ClaudeClient
+from .store import upgrade_table, UserTokenStore, TicketLinkStore
+from .mcp_client import MCPClient, TokenInvalidError, MCPError
+from .claude_client import ClaudeClient
 
 log = logging.getLogger("maubot.linear")
 
@@ -159,8 +160,15 @@ class LinearBot(Plugin):
             )
             return
 
-        await self.user_tokens.save_token(evt.sender, key)
-        await evt.reply("Linear account linked successfully!")
+        # Fetch Linear user identity
+        viewer = await self._fetch_viewer(key)
+        await self.user_tokens.save_token(
+            evt.sender, key,
+            linear_user_id=viewer.get("id"),
+            linear_user_name=viewer.get("name"),
+        )
+        name = viewer.get("name") or "your account"
+        await evt.reply(f"Linear account linked successfully as **{name}**!")
 
     @linear_cmd.subcommand("status", help="Check your Linear account status")
     async def status(self, evt: MessageEvent) -> None:
@@ -183,7 +191,7 @@ class LinearBot(Plugin):
         error = req.query.get("error")
         if error:
             return Response(
-                text=f"<h1>Authorization failed</h1><p>{error}</p>",
+                text=f"<h1>Authorization failed</h1><p>{html.escape(error)}</p>",
                 content_type="text/html",
             )
 
@@ -250,7 +258,13 @@ class LinearBot(Plugin):
                 text="<h1>Token verification failed</h1>", content_type="text/html"
             )
 
-        await self.user_tokens.save_token(matrix_user_id, access_token)
+        # Fetch Linear user identity
+        viewer = await self._fetch_viewer(access_token)
+        await self.user_tokens.save_token(
+            matrix_user_id, access_token,
+            linear_user_id=viewer.get("id"),
+            linear_user_name=viewer.get("name"),
+        )
 
         return Response(
             text=(
@@ -374,6 +388,14 @@ class LinearBot(Plugin):
             self._in_flight.pop(evt.sender, None)
 
     # --- Helpers ---
+
+    async def _fetch_viewer(self, token: str) -> dict:
+        """Fetch the authenticated Linear user's identity. Returns {} on failure."""
+        try:
+            return await self.mcp.get_viewer(self.http, token)
+        except Exception:
+            log.warning("Could not fetch Linear viewer info, continuing without it")
+            return {}
 
     def _is_mentioned(self, evt: MessageEvent) -> bool:
         """Check if the bot is mentioned in the message."""

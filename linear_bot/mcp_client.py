@@ -9,6 +9,8 @@ import aiohttp
 log = logging.getLogger("maubot.linear.mcp")
 
 MCP_URL = "https://mcp.linear.app/mcp"
+GRAPHQL_URL = "https://api.linear.app/graphql"
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 class TokenInvalidError(Exception):
@@ -62,7 +64,7 @@ class MCPClient:
         if params is not None:
             body["params"] = params
 
-        async with session.post(MCP_URL, json=body, headers=headers) as resp:
+        async with session.post(MCP_URL, json=body, headers=headers, timeout=REQUEST_TIMEOUT) as resp:
             if resp.status == 401:
                 self._sessions.pop(th, None)
                 raise TokenInvalidError("Linear token is invalid or expired")
@@ -152,3 +154,24 @@ class MCPClient:
             })
 
         return result
+
+    async def get_viewer(self, session: aiohttp.ClientSession, token: str) -> dict:
+        """Fetch the authenticated user's identity from Linear's GraphQL API."""
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        async with session.post(
+            GRAPHQL_URL,
+            json={"query": "{ viewer { id name } }"},
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+        ) as resp:
+            if resp.status == 401:
+                raise TokenInvalidError("Linear token is invalid or expired")
+            if resp.status >= 400:
+                text = await resp.text()
+                raise MCPError(f"Linear GraphQL returned {resp.status}: {text}", resp.status)
+            data = await resp.json()
+            viewer = data.get("data", {}).get("viewer") or {}
+            return {"id": viewer.get("id"), "name": viewer.get("name")}
