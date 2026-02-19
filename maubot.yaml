@@ -1,11 +1,12 @@
 maubot: 0.1.0
 id: app.cliquers.linear
-version: 0.1.1
+version: 0.1.2
 license: MIT
 modules:
   - linear_bot
 main_class: LinearBot
 database: true
+database_type: asyncpg
 webapp: true
 config: true
 extra_files:
