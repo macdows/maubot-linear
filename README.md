@@ -67,6 +67,9 @@ max_tool_rounds: 5                     # Max tool-use iterations per request
 linear_client_id: ""
 linear_client_secret: ""
 linear_redirect_uri: ""                # e.g. https://maubot.example.com/_matrix/maubot/plugin/<instance>/linear/callback
+
+# Encrypt stored tokens at rest (recommended)
+token_encryption_key: ""               # Any random string; leave empty for plaintext
 ```
 
 ### Linking accounts
@@ -77,7 +80,7 @@ linear_redirect_uri: ""                # e.g. https://maubot.example.com/_matrix
 
 ## Security notes
 
-- Tokens are stored **in plaintext** in the maubot SQLite database. Protect your maubot instance accordingly.
+- Tokens are encrypted at rest when `token_encryption_key` is set (recommended). Without it, tokens are stored in plaintext.
 - The `!linear token` command only accepts tokens via DM. If sent in a room, the bot warns the user and attempts to redact the message.
 - Each user authenticates with their own Linear token — the bot acts on behalf of the mentioning user.
 
@@ -85,7 +88,7 @@ linear_redirect_uri: ""                # e.g. https://maubot.example.com/_matrix
 
 | File | Purpose |
 |------|---------|
-| `linear_bot.py` | Main plugin: mention handler, commands, OAuth, reply context |
+| `bot.py` | Main plugin: mention handler, commands, OAuth, reply context |
 | `mcp_client.py` | MCP JSON-RPC client (session management, tool caching) |
 | `claude_client.py` | Claude API tool-use loop bridging to MCP |
-| `store.py` | Database: user tokens + ticket link mappings |
+| `store.py` | Database: user tokens (with optional encryption) + ticket link mappings |
