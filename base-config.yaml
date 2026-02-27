@@ -6,3 +6,6 @@ max_tool_rounds: 5
 linear_client_id: ""
 linear_client_secret: ""
 linear_redirect_uri: ""
+# Secret key for encrypting Linear tokens at rest (recommended)
+# Set to any random string. If empty, tokens are stored in plaintext.
+token_encryption_key: ""

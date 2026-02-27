@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import re
 import secrets
@@ -35,6 +36,7 @@ class Config(BaseProxyConfig):
         helper.copy("linear_client_id")
         helper.copy("linear_client_secret")
         helper.copy("linear_redirect_uri")
+        helper.copy("token_encryption_key")
 
 
 class LinearBot(Plugin):
@@ -44,15 +46,20 @@ class LinearBot(Plugin):
     http: aiohttp.ClientSession
     _in_flight: dict[str, bool]
     _oauth_states: dict[str, tuple[str, float]]
+    _dm_cache: dict[RoomID, bool]
 
     async def start(self) -> None:
         self.config.load_and_update()
-        self.user_tokens = UserTokenStore(self.database)
+        self.user_tokens = UserTokenStore(
+            self.database,
+            encryption_key=self.config.get("token_encryption_key", None),
+        )
         self.ticket_links = TicketLinkStore(self.database)
         self.mcp = MCPClient()
         self.http = aiohttp.ClientSession()
         self._in_flight = {}
         self._oauth_states = {}
+        self._dm_cache = {}
 
         if self.config["linear_client_id"]:
             log.info(
@@ -80,8 +87,13 @@ class LinearBot(Plugin):
         return not allowed or sender in allowed
 
     async def _is_dm(self, room_id: RoomID) -> bool:
+        cached = self._dm_cache.get(room_id)
+        if cached is not None:
+            return cached
         members = await self.client.get_joined_members(room_id)
-        return len(members) <= 2
+        is_dm = len(members) <= 2
+        self._dm_cache[room_id] = is_dm
+        return is_dm
 
     # --- Commands ---
 
@@ -285,7 +297,7 @@ class LinearBot(Plugin):
 
         # Skip commands (handled by command decorators)
         body = evt.content.body or ""
-        if body.startswith("!linear"):
+        if body == "!linear" or body.startswith("!linear "):
             return
 
         # Skip edits
@@ -351,13 +363,16 @@ class LinearBot(Plugin):
                 max_rounds=self.config["max_tool_rounds"],
             )
 
-            result = await claude.run(
-                http=self.http,
-                mcp=self.mcp,
-                linear_token=info["token"],
-                instruction=instruction,
-                linear_user_name=info.get("user_name"),
-                issue_context=issue_context,
+            result = await asyncio.wait_for(
+                claude.run(
+                    http=self.http,
+                    mcp=self.mcp,
+                    linear_token=info["token"],
+                    instruction=instruction,
+                    linear_user_name=info.get("user_name"),
+                    issue_context=issue_context,
+                ),
+                timeout=120,
             )
 
             log.info(
@@ -373,6 +388,9 @@ class LinearBot(Plugin):
             # Store ticket link if a ticket was created
             await self._store_ticket_links(result, reply_event_id, evt.room_id)
 
+        except TimeoutError:
+            log.warning("Claude loop timed out for %s", evt.sender)
+            await evt.reply("Sorry, the request took too long. Please try again.")
         except TokenInvalidError:
             await evt.reply(
                 "Your Linear token appears invalid. "
@@ -400,12 +418,24 @@ class LinearBot(Plugin):
     def _is_mentioned(self, evt: MessageEvent) -> bool:
         """Check if the bot is mentioned in the message."""
         mxid = self.client.mxid
+
+        # Check m.mentions (MSC3952 / Matrix 1.7+)
+        mentions = evt.content.get("m.mentions")
+        if isinstance(mentions, dict):
+            user_ids = mentions.get("user_ids")
+            if isinstance(user_ids, list) and mxid in user_ids:
+                return True
+
+        # Fallback: check for mention pill in formatted body
+        formatted = getattr(evt.content, "formatted_body", None) or ""
+        if f'href="https://matrix.to/#/{mxid}"' in formatted:
+            return True
+
+        # Fallback: plain-text mention
         body = evt.content.body or ""
         if mxid in body:
             return True
-        formatted = getattr(evt.content, "formatted_body", None) or ""
-        if mxid in formatted:
-            return True
+
         return False
 
     def _strip_mention(self, body: str) -> str:
@@ -463,18 +493,37 @@ class LinearBot(Plugin):
         # Look for issue creation tool calls
         for tc in tool_calls:
             name = tc["name"].lower()
-            if "create" in name and "issue" in name:
-                # Extract issue identifier from Claude's response
-                id_match = re.search(r"\b([A-Z]+-\d+)\b", response_text)
-                identifier = id_match.group(1) if id_match else None
+            if "create" not in name or "issue" not in name:
+                continue
+            if tc.get("is_error"):
+                continue
 
-                # Extract issue ID from the tool input if available
-                issue_id = tc["input"].get("id", identifier or "unknown")
+            # Extract issue identifier from Claude's response text
+            id_match = re.search(r"\b([A-Z]+-\d+)\b", response_text)
+            identifier = id_match.group(1) if id_match else None
 
-                await self.ticket_links.save_link(
-                    event_id=str(reply_event_id),
-                    room_id=str(room_id),
-                    issue_id=issue_id,
-                    issue_identifier=identifier,
+            # Extract issue ID from the tool result (MCP response)
+            tool_result = tc.get("result", "")
+            issue_id = None
+            try:
+                result_data = json.loads(tool_result)
+                if isinstance(result_data, dict):
+                    issue_id = result_data.get("id")
+            except (json.JSONDecodeError, TypeError):
+                # Result may not be JSON — try regex for UUID-like IDs
+                uuid_match = re.search(
+                    r'"id"\s*:\s*"([a-f0-9-]{36})"', tool_result
                 )
-                return
+                if uuid_match:
+                    issue_id = uuid_match.group(1)
+
+            if not issue_id:
+                issue_id = identifier or "unknown"
+
+            await self.ticket_links.save_link(
+                event_id=str(reply_event_id),
+                room_id=str(room_id),
+                issue_id=issue_id,
+                issue_identifier=identifier,
+            )
+            return

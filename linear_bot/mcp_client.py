@@ -7,6 +7,8 @@ import time
 
 import aiohttp
 
+from . import __version__
+
 log = logging.getLogger("maubot.linear.mcp")
 
 MCP_URL = "https://mcp.linear.app/mcp"
@@ -28,8 +30,8 @@ class MCPClient:
     def __init__(self) -> None:
         self._sessions: dict[str, str] = {}  # token_hash -> session_id
         self._request_id = 0
-        self._tools_cache: list[dict] | None = None
-        self._tools_cache_time: float = 0
+        self._tools_cache: dict[str, list[dict]] = {}  # token_hash -> tools
+        self._tools_cache_time: dict[str, float] = {}  # token_hash -> timestamp
         self._tools_cache_ttl = 3600  # 1 hour
 
     def _token_hash(self, token: str) -> str:
@@ -112,8 +114,40 @@ class MCPClient:
                 if "id" in msg:
                     return msg
         if data_buf:
-            return json.loads("\n".join(data_buf))
+            try:
+                return json.loads("\n".join(data_buf))
+            except json.JSONDecodeError as e:
+                raise MCPError(f"SSE stream ended with invalid JSON: {e}")
         raise MCPError("SSE stream ended without a JSON-RPC response")
+
+    async def _notify(
+        self,
+        session: aiohttp.ClientSession,
+        token: str,
+        method: str,
+        params: dict | None = None,
+    ) -> None:
+        """Send a JSON-RPC notification (no id, no response expected)."""
+        th = self._token_hash(token)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        session_id = self._sessions.get(th)
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+
+        body: dict = {
+            "jsonrpc": "2.0",
+            "method": method,
+        }
+        if params is not None:
+            body["params"] = params
+
+        async with session.post(MCP_URL, json=body, headers=headers, timeout=REQUEST_TIMEOUT) as resp:
+            if resp.status >= 400:
+                log.warning("MCP notification %s returned %d", method, resp.status)
 
     async def initialize(self, session: aiohttp.ClientSession, token: str) -> dict:
         """Initialize an MCP session. Must be called before other methods."""
@@ -123,8 +157,12 @@ class MCPClient:
         result, _ = await self._request(session, token, "initialize", {
             "protocolVersion": "2025-03-26",
             "capabilities": {},
-            "clientInfo": {"name": "maubot-linear", "version": "0.1.0"},
+            "clientInfo": {"name": "maubot-linear", "version": __version__},
         })
+
+        # MCP spec requires sending initialized notification after init response
+        await self._notify(session, token, "notifications/initialized")
+
         log.debug("MCP session initialized for token %s", th)
         return result
 
@@ -135,10 +173,12 @@ class MCPClient:
             await self.initialize(session, token)
 
     async def list_tools(self, session: aiohttp.ClientSession, token: str) -> list[dict]:
-        """Fetch available tools from Linear MCP. Cached for 1 hour."""
+        """Fetch available tools from Linear MCP. Cached per-token for 1 hour."""
+        th = self._token_hash(token)
         now = time.monotonic()
-        if self._tools_cache and (now - self._tools_cache_time) < self._tools_cache_ttl:
-            return self._tools_cache
+        cached_time = self._tools_cache_time.get(th, 0)
+        if th in self._tools_cache and (now - cached_time) < self._tools_cache_ttl:
+            return self._tools_cache[th]
 
         await self._ensure_session(session, token)
         try:
@@ -146,13 +186,14 @@ class MCPClient:
         except TokenInvalidError:
             raise
         except Exception:
-            self._tools_cache = None
+            self._tools_cache.pop(th, None)
+            self._tools_cache_time.pop(th, None)
             raise
 
         tools = result.get("tools", [])
-        self._tools_cache = tools
-        self._tools_cache_time = now
-        log.info("Cached %d MCP tools from Linear", len(tools))
+        self._tools_cache[th] = tools
+        self._tools_cache_time[th] = now
+        log.info("Cached %d MCP tools from Linear for token %s", len(tools), th)
         return tools
 
     async def call_tool(

@@ -115,8 +115,6 @@ class ClaudeClient:
                 tool_name = tu["name"]
                 tool_input = tu["input"]
                 tool_id = tu["id"]
-                all_tool_calls.append({"name": tool_name, "input": tool_input})
-
                 log.info("Tool call [round %d]: %s(%s)", round_num + 1, tool_name, json.dumps(tool_input)[:200])
 
                 try:
@@ -128,6 +126,12 @@ class ClaudeClient:
                     ) if result_content else json.dumps(result)
 
                     is_error = result.get("isError", False)
+                    all_tool_calls.append({
+                        "name": tool_name,
+                        "input": tool_input,
+                        "result": result_text,
+                        "is_error": is_error,
+                    })
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_id,
@@ -138,6 +142,12 @@ class ClaudeClient:
                     raise
                 except Exception as e:
                     log.exception("Tool call %s failed", tool_name)
+                    all_tool_calls.append({
+                        "name": tool_name,
+                        "input": tool_input,
+                        "result": str(e),
+                        "is_error": True,
+                    })
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_id,
