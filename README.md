@@ -6,6 +6,7 @@ A [maubot](https://github.com/maubot/maubot) plugin that lets Matrix users inter
 
 ```
 User mentions bot in Matrix room
+  → Bot reacts 👀 (immediate acknowledgement)
   → Plugin resolves user's Linear token
   → Fetches tool definitions from Linear MCP server
   → Claude decides which Linear tools to call
@@ -27,8 +28,6 @@ Mention the bot followed by a natural language instruction:
 | Add comment | *(reply to ticket msg)* `@Linear add a comment: investigated, this is a backend issue` |
 
 When replying to a message the bot sent about a ticket, the issue context is automatically resolved.
-
-The bot reacts with 👀 immediately when it receives a mention, before Claude responds, so you know the request was received.
 
 ### Commands
 
@@ -94,3 +93,14 @@ token_encryption_key: ""               # Any random string; leave empty for plai
 | `mcp_client.py` | MCP JSON-RPC client (session management, tool caching) |
 | `claude_client.py` | Claude API tool-use loop bridging to MCP |
 | `store.py` | Database: user tokens (with optional encryption) + ticket link mappings |
+
+## Development
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+Tests cover all four source modules and run without a live maubot or Matrix homeserver (maubot/mautrix are stubbed via `conftest.py`).
