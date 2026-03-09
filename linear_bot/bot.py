@@ -359,7 +359,9 @@ class LinearBot(Plugin):
         # Note file attachments
         mxc_url = getattr(evt.content, "url", None)
         if mxc_url:
-            filename = body if body else "attachment"
+            raw_name = body if body else "attachment"
+            # Collapse whitespace/newlines to prevent prompt injection via filename
+            filename = " ".join(raw_name.split())[:200]
             instruction += f"\n\n[Attached file: {filename} ({mxc_url})]"
 
         # Check API key
