@@ -247,3 +247,110 @@ async def test_store_ticket_links_no_reply_event_id():
     }
     await bot._store_ticket_links(result, None, "!room:example.com")
     bot.ticket_links.save_link.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _fetch_thread_context
+# ---------------------------------------------------------------------------
+
+def _make_parent_evt(body: str, sender: str, reply_to=None):
+    """Build a minimal fake parent event."""
+    content = MagicMock()
+    content.body = body
+    content.get_reply_to = MagicMock(return_value=reply_to)
+    evt = MagicMock()
+    evt.content = content
+    evt.sender = sender
+    return evt
+
+
+class TestFetchThreadContext:
+    def setup_method(self):
+        self.bot = _make_bot()
+        self.bot.client.get_event = AsyncMock()
+
+    async def test_no_reply_returns_empty(self):
+        evt = MagicMock()
+        evt.content = MagicMock()
+        evt.content.get_reply_to = MagicMock(return_value=None)
+        evt.room_id = "!room:example.com"
+        result = await self.bot._fetch_thread_context(evt)
+        assert result == []
+
+    async def test_single_parent(self):
+        parent = _make_parent_evt("Hello from user", "@user:example.com")
+        evt = MagicMock()
+        evt.content = MagicMock()
+        evt.content.get_reply_to = MagicMock(return_value="$parent_evt")
+        evt.room_id = "!room:example.com"
+        self.bot.client.get_event = AsyncMock(return_value=parent)
+
+        result = await self.bot._fetch_thread_context(evt)
+        assert len(result) == 1
+        assert result[0]["sender"] == "@user:example.com"
+        assert result[0]["body"] == "Hello from user"
+        assert result[0]["is_bot"] is False
+
+    async def test_bot_message_marked_is_bot(self):
+        parent = _make_parent_evt("I created ENG-1 for you.", MXID)
+        evt = MagicMock()
+        evt.content = MagicMock()
+        evt.content.get_reply_to = MagicMock(return_value="$bot_msg")
+        evt.room_id = "!room:example.com"
+        self.bot.client.get_event = AsyncMock(return_value=parent)
+
+        result = await self.bot._fetch_thread_context(evt)
+        assert result[0]["is_bot"] is True
+
+    async def test_chain_returned_oldest_first(self):
+        # Chain: evt → C → B → A  (A is oldest)
+        evt_a = _make_parent_evt("Message A", "@alice:example.com", reply_to=None)
+        evt_b = _make_parent_evt("Message B", "@bob:example.com", reply_to="$a")
+        evt_c = _make_parent_evt("Message C", "@carol:example.com", reply_to="$b")
+
+        async def get_event(room_id, event_id):
+            return {"$c": evt_c, "$b": evt_b, "$a": evt_a}[event_id]
+
+        self.bot.client.get_event = AsyncMock(side_effect=get_event)
+
+        evt = MagicMock()
+        evt.content = MagicMock()
+        evt.content.get_reply_to = MagicMock(return_value="$c")
+        evt.room_id = "!room:example.com"
+
+        result = await self.bot._fetch_thread_context(evt)
+        assert [m["body"] for m in result] == ["Message A", "Message B", "Message C"]
+
+    async def test_reply_fallback_lines_stripped(self):
+        body_with_quotes = "> quoted line\n> another quote\nActual reply"
+        parent = _make_parent_evt(body_with_quotes, "@user:example.com")
+        evt = MagicMock()
+        evt.content = MagicMock()
+        evt.content.get_reply_to = MagicMock(return_value="$parent")
+        evt.room_id = "!room:example.com"
+        self.bot.client.get_event = AsyncMock(return_value=parent)
+
+        result = await self.bot._fetch_thread_context(evt)
+        assert result[0]["body"] == "Actual reply"
+
+    async def test_empty_body_after_stripping_excluded(self):
+        body_only_quotes = "> quoted line\n> another quote\n"
+        parent = _make_parent_evt(body_only_quotes, "@user:example.com")
+        evt = MagicMock()
+        evt.content = MagicMock()
+        evt.content.get_reply_to = MagicMock(return_value="$parent")
+        evt.room_id = "!room:example.com"
+        self.bot.client.get_event = AsyncMock(return_value=parent)
+
+        result = await self.bot._fetch_thread_context(evt)
+        assert result == []
+
+    async def test_get_event_exception_breaks_chain(self):
+        self.bot.client.get_event = AsyncMock(side_effect=Exception("network error"))
+        evt = MagicMock()
+        evt.content = MagicMock()
+        evt.content.get_reply_to = MagicMock(return_value="$parent")
+        evt.room_id = "!room:example.com"
+
+        result = await self.bot._fetch_thread_context(evt)
+        assert result == []
