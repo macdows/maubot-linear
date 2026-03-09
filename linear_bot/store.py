@@ -12,56 +12,60 @@ log = logging.getLogger("maubot.linear.store")
 
 upgrade_table = UpgradeTable()
 
-# Prefix to distinguish encrypted values from plaintext
-_ENC_PREFIX = "enc:"
+# enc2: = HMAC-CTR + Encrypt-then-MAC with HKDF-derived keys (current scheme)
+# enc:  = legacy scheme with SHA-256-derived keys (no longer written)
+_ENC_PREFIX_V2 = "enc2:"
+_ENC_PREFIX_V1 = "enc:"
+
+
+def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
+    """HKDF-Expand (RFC 5869) using HMAC-SHA256."""
+    okm = b""
+    t = b""
+    for i in range(1, -(-length // 32) + 1):  # ceil(length/32)
+        t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+        okm += t
+    return okm[:length]
 
 
 def _derive_keys(secret: str) -> tuple[bytes, bytes]:
-    """Derive an encryption key and HMAC key from a secret string."""
-    master = hashlib.sha256(secret.encode()).digest()
-    enc_key = hashlib.sha256(b"enc:" + master).digest()
-    mac_key = hashlib.sha256(b"mac:" + master).digest()
+    """Derive enc and MAC keys from a secret string using HKDF-SHA256 (RFC 5869)."""
+    # HKDF-Extract with a fixed application salt
+    prk = hmac.new(b"maubot-linear-v2", secret.encode(), hashlib.sha256).digest()
+    enc_key = _hkdf_expand(prk, b"enc", 32)
+    mac_key = _hkdf_expand(prk, b"mac", 32)
     return enc_key, mac_key
 
 
-def _xor_bytes(data: bytes, key_stream: bytes) -> bytes:
-    return bytes(a ^ b for a, b in zip(data, key_stream))
-
-
 def _keystream(key: bytes, nonce: bytes, length: int) -> bytes:
-    """Generate a keystream using HMAC-SHA256 in counter mode."""
+    """Generate a keystream using HMAC-SHA256 in counter mode (PRF-CTR)."""
     stream = b""
     counter = 0
     while len(stream) < length:
-        block = hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
-        stream += block
+        stream += hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest()
         counter += 1
     return stream[:length]
 
 
 def _encrypt_value(plaintext: str, enc_key: bytes, mac_key: bytes) -> str:
-    """Encrypt a string. Returns base64-encoded nonce + ciphertext + mac."""
+    """Encrypt-then-MAC. Returns prefixed base64(nonce || ciphertext || mac)."""
     data = plaintext.encode()
     nonce = os.urandom(16)
-    stream = _keystream(enc_key, nonce, len(data))
-    ciphertext = _xor_bytes(data, stream)
+    ciphertext = bytes(a ^ b for a, b in zip(data, _keystream(enc_key, nonce, len(data))))
     mac = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
-    return _ENC_PREFIX + base64.urlsafe_b64encode(nonce + ciphertext + mac).decode()
+    return _ENC_PREFIX_V2 + base64.urlsafe_b64encode(nonce + ciphertext + mac).decode()
 
 
 def _decrypt_value(stored: str, enc_key: bytes, mac_key: bytes) -> str | None:
-    """Decrypt a value. Returns None if MAC verification fails."""
-    raw = base64.urlsafe_b64decode(stored[len(_ENC_PREFIX):])
-    if len(raw) < 16 + 32:  # nonce + mac minimum
+    """Verify MAC then decrypt. Returns None on authentication failure."""
+    raw = base64.urlsafe_b64decode(stored[len(_ENC_PREFIX_V2):])
+    if len(raw) < 16 + 32:  # nonce(16) + mac(32) minimum
         return None
-    nonce = raw[:16]
-    ciphertext = raw[16:-32]
-    stored_mac = raw[-32:]
+    nonce, ciphertext, stored_mac = raw[:16], raw[16:-32], raw[-32:]
     expected_mac = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
     if not hmac.compare_digest(stored_mac, expected_mac):
         return None
-    stream = _keystream(enc_key, nonce, len(ciphertext))
-    return _xor_bytes(ciphertext, stream).decode()
+    return bytes(a ^ b for a, b in zip(ciphertext, _keystream(enc_key, nonce, len(ciphertext)))).decode()
 
 
 @upgrade_table.register(description="Initial revision: user tokens and ticket links")
@@ -102,15 +106,23 @@ class UserTokenStore:
     def _decrypt(self, stored: str) -> str:
         if not self._enc_key:
             return stored
-        if not stored.startswith(_ENC_PREFIX):
-            # Token was stored before encryption was enabled — return as-is
-            log.debug("Token not encrypted, returning plaintext (migration needed)")
+        if stored.startswith(_ENC_PREFIX_V2):
+            result = _decrypt_value(stored, self._enc_key, self._mac_key)
+            if result is None:
+                log.warning("Token decryption failed (wrong key?), returning raw value")
+                return stored
+            return result
+        if stored.startswith(_ENC_PREFIX_V1):
+            # Token was written by the old scheme with SHA-256-derived keys.
+            # Keys are now derived differently so it cannot be decrypted.
+            # The user must re-link their account.
+            log.warning(
+                "Token uses legacy encryption (enc:) — user must re-link their account"
+            )
             return stored
-        result = _decrypt_value(stored, self._enc_key, self._mac_key)
-        if result is None:
-            log.warning("Token decryption failed (wrong key?), returning raw value")
-            return stored
-        return result
+        # Token was stored before encryption was enabled — return as-is
+        log.debug("Token not encrypted, returning plaintext (migration needed)")
+        return stored
 
     async def get_token(self, matrix_user_id: str) -> str | None:
         stored = await self.db.fetchval(

@@ -1,6 +1,6 @@
 maubot: 0.1.0
 id: app.cliquers.linear
-version: 0.1.5
+version: 0.1.7
 license: MIT
 modules:
   - linear_bot
