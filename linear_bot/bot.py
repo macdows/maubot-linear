@@ -25,6 +25,7 @@ from .claude_client import ClaudeClient
 log = logging.getLogger("maubot.linear")
 
 LINEAR_URL_RE = re.compile(r"https://linear\.app/[^\s)]+/issue/([A-Z]+-\d+)")
+_THREAD_CONTEXT_LIMIT = 10  # max hops up the reply chain
 
 
 class Config(BaseProxyConfig):
@@ -354,6 +355,20 @@ class LinearBot(Plugin):
         # Resolve reply context (ticket from replied-to message)
         issue_context = await self._resolve_reply_context(evt)
 
+        # Collect thread history for conversational context
+        thread_history = await self._fetch_thread_context(evt)
+        if thread_history:
+            lines = []
+            for m in thread_history:
+                label = "Bot" if m["is_bot"] else m["sender"]
+                lines.append(f"{label}: {m['body']}")
+            instruction = (
+                "[Thread context]\n"
+                + "\n".join(lines)
+                + "\n\n[Current request]\n"
+                + instruction
+            )
+
         # Note file attachments
         mxc_url = getattr(evt.content, "url", None)
         if mxc_url:
@@ -516,6 +531,36 @@ class LinearBot(Plugin):
                 return f"This is about Linear issue {id_match.group(1)}."
 
         return None
+
+    async def _fetch_thread_context(self, evt: MessageEvent) -> list[dict]:
+        """Walk the reply chain and return messages in chronological order.
+
+        Each entry: {"sender": str, "body": str, "is_bot": bool}
+        Stops after _THREAD_CONTEXT_LIMIT hops or when there is no further parent.
+        """
+        messages = []
+        current = evt
+        for _ in range(_THREAD_CONTEXT_LIMIT):
+            parent_id = current.content.get_reply_to()
+            if not parent_id:
+                break
+            try:
+                parent = await self.client.get_event(evt.room_id, parent_id)
+            except Exception:
+                log.debug("Could not fetch thread parent %s", parent_id)
+                break
+            body = getattr(parent.content, "body", None) or ""
+            # Strip Matrix reply-fallback quote lines ("> …")
+            body = re.sub(r"(?m)^>.*\n?", "", body).strip()
+            if body:
+                messages.append({
+                    "sender": parent.sender,
+                    "body": body,
+                    "is_bot": parent.sender == self.client.mxid,
+                })
+            current = parent
+        messages.reverse()  # oldest → newest
+        return messages
 
     async def _store_ticket_links(
         self, claude_result: dict, reply_event_id, room_id: RoomID
