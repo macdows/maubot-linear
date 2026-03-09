@@ -372,6 +372,12 @@ class LinearBot(Plugin):
             await evt.reply("The bot's Anthropic API key is not configured.")
             return
 
+        # Acknowledge the mention immediately so the user knows we're working
+        try:
+            await evt.react("👀")
+        except Exception:
+            log.debug("Failed to send 👀 reaction for %s", evt.sender)
+
         # Run Claude + MCP loop
         self._in_flight[evt.sender] = True
         try:
