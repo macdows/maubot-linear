@@ -28,6 +28,8 @@ Mention the bot followed by a natural language instruction:
 
 When replying to a message the bot sent about a ticket, the issue context is automatically resolved.
 
+The bot reacts with 👀 immediately when it receives a mention, before Claude responds, so you know the request was received.
+
 ### Commands
 
 | Command | Description |
