@@ -12,6 +12,10 @@ log = logging.getLogger("maubot.linear.store")
 
 upgrade_table = UpgradeTable()
 
+
+class TokenDecryptionError(Exception):
+    """Raised when a stored token cannot be decrypted (wrong key or corrupt data)."""
+
 # enc2: = HMAC-CTR + Encrypt-then-MAC with HKDF-derived keys (current scheme)
 # enc:  = legacy scheme with SHA-256-derived keys (no longer written)
 _ENC_PREFIX_V2 = "enc2:"
@@ -109,8 +113,7 @@ class UserTokenStore:
         if stored.startswith(_ENC_PREFIX_V2):
             result = _decrypt_value(stored, self._enc_key, self._mac_key)
             if result is None:
-                log.warning("Token decryption failed (wrong key?), returning raw value")
-                return stored
+                raise TokenDecryptionError("Token MAC verification failed (wrong encryption key?)")
             return result
         if stored.startswith(_ENC_PREFIX_V1):
             # Token was written by the old scheme with SHA-256-derived keys.

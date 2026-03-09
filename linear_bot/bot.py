@@ -18,7 +18,7 @@ from maubot.handlers import command, event, web
 from mautrix.types import EventType, RoomID
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
-from .store import upgrade_table, UserTokenStore, TicketLinkStore
+from .store import upgrade_table, UserTokenStore, TicketLinkStore, TokenDecryptionError
 from .mcp_client import MCPClient, TokenInvalidError, MCPError
 from .claude_client import ClaudeClient
 
@@ -184,7 +184,14 @@ class LinearBot(Plugin):
 
     @linear_cmd.subcommand("status", help="Check your Linear account status")
     async def status(self, evt: MessageEvent) -> None:
-        info = await self.user_tokens.get_user_info(evt.sender)
+        try:
+            info = await self.user_tokens.get_user_info(evt.sender)
+        except TokenDecryptionError:
+            await evt.reply(
+                "Your token could not be decrypted (the encryption key may have changed). "
+                "Please re-link with `!linear link`."
+            )
+            return
         if info:
             name = info.get("user_name") or "Unknown"
             await evt.reply(f"Linked to Linear as **{name}**.")
@@ -324,7 +331,14 @@ class LinearBot(Plugin):
             return
 
         # Look up user token
-        info = await self.user_tokens.get_user_info(evt.sender)
+        try:
+            info = await self.user_tokens.get_user_info(evt.sender)
+        except TokenDecryptionError:
+            await evt.reply(
+                "Your token could not be decrypted (the encryption key may have changed). "
+                "Please re-link with `!linear link`."
+            )
+            return
         if not info:
             await evt.reply(
                 "You haven't linked your Linear account yet.\n\n"
