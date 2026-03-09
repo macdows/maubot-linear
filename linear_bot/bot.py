@@ -516,14 +516,14 @@ class LinearBot(Plugin):
         return None
 
     async def _store_ticket_links(
-        self, result: dict, reply_event_id, room_id: RoomID
+        self, claude_result: dict, reply_event_id, room_id: RoomID
     ) -> None:
         """Store a ticket link mapping if a ticket was created."""
         if not reply_event_id:
             return
 
-        response_text = result.get("text", "")
-        tool_calls = result.get("tool_calls", [])
+        response_text = claude_result.get("text", "")
+        tool_calls = claude_result.get("tool_calls", [])
 
         # Look for issue creation tool calls
         for tc in tool_calls:
