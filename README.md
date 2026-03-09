@@ -47,6 +47,8 @@ When replying to a message the bot sent about a ticket, the issue context is aut
 
 ### Install
 
+Download `linear_bot.mbp` from the [latest release](../../releases/latest), or build it yourself:
+
 ```sh
 make build
 ```
