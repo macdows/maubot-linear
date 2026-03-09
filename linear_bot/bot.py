@@ -92,6 +92,8 @@ class LinearBot(Plugin):
             return cached
         members = await self.client.get_joined_members(room_id)
         is_dm = len(members) <= 2
+        if len(self._dm_cache) >= 1000:
+            self._dm_cache.pop(next(iter(self._dm_cache)))
         self._dm_cache[room_id] = is_dm
         return is_dm
 
@@ -348,7 +350,7 @@ class LinearBot(Plugin):
 
         # Extract instruction
         body = evt.content.body or ""
-        instruction = self._strip_mention(body)
+        instruction = self._strip_mention(evt)
         if not instruction.strip():
             await evt.reply("What would you like me to do in Linear?")
             return
@@ -454,11 +456,28 @@ class LinearBot(Plugin):
 
         return False
 
-    def _strip_mention(self, body: str) -> str:
+    def _strip_mention(self, evt: MessageEvent) -> str:
         """Remove the bot mention from the message body."""
         mxid = self.client.mxid
+
+        # Prefer formatted body: the mention is an <a> pill we can target exactly,
+        # regardless of what display name the client put in the plain-text body.
+        formatted = getattr(evt.content, "formatted_body", None) or ""
+        if formatted and mxid in formatted:
+            clean = re.sub(
+                rf'<a href="https://matrix\.to/#/{re.escape(mxid)}"[^>]*>.*?</a>',
+                "",
+                formatted,
+            )
+            clean = re.sub(r"<[^>]+>", "", clean)  # strip remaining tags
+            clean = html.unescape(clean).strip()
+            clean = re.sub(r"^[,:]\s*", "", clean)
+            if clean:
+                return clean
+
+        # Fallback: strip MXID from plain-text body
+        body = evt.content.body or ""
         text = body.replace(mxid, "").strip()
-        # Strip leading colon/comma left after mention removal
         text = re.sub(r"^[,:]\s*", "", text)
         return text
 
