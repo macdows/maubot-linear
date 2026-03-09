@@ -317,10 +317,6 @@ class LinearBot(Plugin):
         if not self._is_mentioned(evt):
             return
 
-        # Don't handle mentions in DMs
-        if await self._is_dm(evt.room_id):
-            return
-
         await self._handle_mention(evt)
 
     async def _handle_mention(self, evt: MessageEvent) -> None:
